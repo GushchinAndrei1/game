@@ -1,0 +1,602 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>MAKC Runner</title>
+  <style>
+    :root {
+      color-scheme: light;
+    }
+    * {
+      box-sizing: border-box;
+      margin: 0;
+      padding: 0;
+    }
+    html, body {
+      width: 100%;
+      height: 100%;
+      overflow: hidden;
+      background: #d2d2d2;
+      font-family: "Courier New", monospace;
+    }
+    canvas {
+      display: block;
+      width: 100vw;
+      height: 100vh;
+      touch-action: none;
+    }
+    #leaderToggle {
+      position: fixed;
+      top: 10px;
+      left: 10px;
+      padding: 6px 10px;
+      background: #d2d2d2;
+      border: 2px solid #3c3c3c;
+      color: #3c3c3c;
+      font-family: "Courier New", monospace;
+      cursor: pointer;
+      user-select: none;
+      z-index: 5;
+    }
+    #leaderboard {
+      position: fixed;
+      top: 50px;
+      left: 10px;
+      padding: 8px 10px;
+      background: #d2d2d2;
+      border: 2px solid #3c3c3c;
+      color: #3c3c3c;
+      font-family: "Courier New", monospace;
+      min-width: 200px;
+      max-width: 260px;
+      max-height: 50vh;
+      overflow-y: auto;
+      display: none;
+      z-index: 4;
+    }
+    #leaderboard.open {
+      display: block;
+    }
+    #leaderboard ul {
+      list-style: none;
+      margin-top: 6px;
+    }
+    #leaderboard li {
+      padding: 2px 0;
+      border-bottom: 1px dashed #3c3c3c;
+    }
+    .board-title {
+      font-weight: bold;
+      text-align: center;
+    }
+    .hint {
+      position: fixed;
+      bottom: 10px;
+      width: 100%;
+      text-align: center;
+      color: #3c3c3c;
+      font-family: "Courier New", monospace;
+      user-select: none;
+      pointer-events: none;
+    }
+  </style>
+</head>
+  <body>
+    <canvas id="game"></canvas>
+    <button id="leaderToggle" aria-expanded="false">Leaders</button>
+    <div id="leaderboard" aria-live="polite">
+      <div class="board-title">Лидеры</div>
+      <ul id="leaderList"></ul>
+    </div>
+    <div class="hint">Tap or press SPACE to jump</div>
+    <script>
+      (() => {
+        const canvas = document.getElementById('game');
+        const ctx = canvas.getContext('2d');
+        const leaderToggle = document.getElementById('leaderToggle');
+        const leaderboardPanel = document.getElementById('leaderboard');
+        const leaderList = document.getElementById('leaderList');
+        const colors = { bg: '#d2d2d2', fg: '#3c3c3c', outline: '#ffffff' };
+
+      let w = window.innerWidth;
+      let h = window.innerHeight;
+      let dpr = window.devicePixelRatio || 1;
+      let lastTime = 0;
+      let gameOver = false;
+      let speed = 0;
+      let baseSpeed = 0;
+      let groundY = 0;
+      let fontSize = 16;
+      let score = 0;
+      let bestScore = 0;
+      let userName = '';
+      let legTimer = 0;
+      let legFrame = 0;
+      let blinkTimer = 0;
+      let eyeOpen = true;
+      let leaderboard = [];
+
+      const clouds = [];
+      const hills = [];
+      const cacti = [];
+      let sandDots = [];
+
+      const player = {
+        x: 0,
+        y: 0,
+        width: 0,
+        height: 0,
+        vy: 0,
+        state: 'running',
+      };
+
+      function resize() {
+        w = window.innerWidth;
+        h = window.innerHeight;
+        dpr = window.devicePixelRatio || 1;
+        canvas.style.width = w + 'px';
+        canvas.style.height = h + 'px';
+        canvas.width = Math.round(w * dpr);
+        canvas.height = Math.round(h * dpr);
+        ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+        computeMetrics();
+      }
+
+      function computeMetrics() {
+        groundY = h * 0.8;
+        player.width = h * 0.08;
+        player.height = h * 0.1;
+        player.x = w * 0.15;
+        if (player.state === 'running' || player.state === 'dead') {
+          player.y = groundY - player.height;
+          player.vy = 0;
+        }
+        const speedRatio = baseSpeed ? speed / baseSpeed : 1;
+        baseSpeed = w * 0.45;
+        speed = gameOver ? baseSpeed : baseSpeed * (speedRatio || 1);
+        fontSize = Math.max(12, Math.round(h * 0.04));
+        buildBackground();
+        buildSand();
+      }
+
+      function buildBackground() {
+        clouds.length = 0;
+        hills.length = 0;
+        const cloudCount = Math.max(3, Math.floor(w / 300));
+        for (let i = 0; i < cloudCount; i++) {
+          const cw = w * (0.08 + Math.random() * 0.05);
+          const ch = h * 0.04;
+          clouds.push({
+            x: Math.random() * w,
+            y: h * 0.2 + Math.random() * h * 0.25,
+            w: cw,
+            h: ch,
+            speed: baseSpeed * 0.1 * (0.7 + Math.random() * 0.6),
+          });
+        }
+        const hillCount = 2;
+        for (let i = 0; i < hillCount; i++) {
+          const hw = w * (0.5 + Math.random() * 0.3);
+          hills.push({
+            x: Math.random() * w,
+            y: groundY - h * (0.12 + Math.random() * 0.05),
+            w: hw,
+            h: h * (0.15 + Math.random() * 0.05),
+            speed: baseSpeed * 0.15,
+          });
+        }
+      }
+
+      function buildSand() {
+        sandDots = [];
+        const count = Math.max(30, Math.floor(w / 15));
+        for (let i = 0; i < count; i++) {
+          sandDots.push({
+            x: Math.random() * w,
+            y: groundY + (Math.random() * 6 - 3),
+          });
+        }
+      }
+
+      function resetGame() {
+        gameOver = false;
+        score = 0;
+        speed = baseSpeed;
+        legTimer = 0;
+        legFrame = 0;
+        blinkTimer = 0;
+        eyeOpen = true;
+        cacti.length = 0;
+        buildBackground();
+        buildSand();
+        player.state = 'running';
+        player.vy = 0;
+        player.y = groundY - player.height;
+        spawnTimer = randomSpawnTime();
+      }
+
+      function initGame() {
+        resize();
+        loadLeaderboard();
+        loadUser();
+        ensureLeaderboardEntry();
+        renderLeaderboard();
+        resetGame();
+        lastTime = performance.now();
+        window.addEventListener('resize', resize);
+        window.addEventListener('keydown', handleKeydown, { passive: false });
+        canvas.addEventListener('mousedown', handlePointer);
+        canvas.addEventListener('touchstart', handlePointer, { passive: false });
+        leaderToggle.addEventListener('click', toggleLeaderboard);
+        requestAnimationFrame(loop);
+      }
+
+      function loadUser() {
+        try {
+          const saved = localStorage.getItem('makcRunnerUser');
+          if (saved) {
+            const parsed = JSON.parse(saved);
+            userName = parsed.name || '';
+            bestScore = Number.isFinite(parsed.best) ? parsed.best : 0;
+          }
+        } catch (e) {}
+
+        if (!userName) {
+          userName = prompt('Введите ваше имя игрока:', 'Игрок') || 'Игрок';
+          saveUser();
+        }
+        mergeUserBestFromLeaderboard();
+      }
+
+      function saveUser() {
+        try {
+          localStorage.setItem('makcRunnerUser', JSON.stringify({ name: userName, best: Math.floor(bestScore) }));
+        } catch (e) {}
+      }
+
+      function loadLeaderboard() {
+        try {
+          const saved = localStorage.getItem('makcRunnerLeaders');
+          const parsed = saved ? JSON.parse(saved) : [];
+          if (Array.isArray(parsed)) {
+            leaderboard = parsed
+              .filter(entry => entry && typeof entry.name === 'string' && Number.isFinite(entry.best))
+              .map(entry => ({ name: entry.name, best: Math.floor(entry.best) }));
+          }
+        } catch (e) {
+          leaderboard = [];
+        }
+      }
+
+      function saveLeaderboard() {
+        try {
+          localStorage.setItem('makcRunnerLeaders', JSON.stringify(leaderboard.slice(0, 20)));
+        } catch (e) {}
+      }
+
+      function mergeUserBestFromLeaderboard() {
+        const existing = leaderboard.find(entry => entry.name === userName);
+        if (existing) {
+          bestScore = Math.max(bestScore, existing.best);
+        }
+      }
+
+      function ensureLeaderboardEntry() {
+        let entry = leaderboard.find(e => e.name === userName);
+        if (!entry) {
+          entry = { name: userName, best: Math.floor(bestScore) };
+          leaderboard.push(entry);
+          saveLeaderboard();
+        }
+      }
+
+      function updateLeaderboard() {
+        const bestValue = Math.floor(bestScore);
+        const existing = leaderboard.find(entry => entry.name === userName);
+        if (existing) {
+          existing.best = Math.max(existing.best, bestValue);
+        } else {
+          leaderboard.push({ name: userName, best: bestValue });
+        }
+        leaderboard.sort((a, b) => b.best - a.best || a.name.localeCompare(b.name));
+        leaderboard = leaderboard.slice(0, 20);
+        saveLeaderboard();
+        renderLeaderboard();
+      }
+
+      function renderLeaderboard() {
+        leaderList.innerHTML = '';
+        leaderboard.forEach((entry, idx) => {
+          const li = document.createElement('li');
+          li.textContent = `${pad(idx + 1)} ${entry.name} — ${pad(entry.best)}`;
+          leaderList.appendChild(li);
+        });
+      }
+
+      function toggleLeaderboard() {
+        const isOpen = leaderboardPanel.classList.toggle('open');
+        leaderToggle.setAttribute('aria-expanded', isOpen);
+      }
+
+      function handleKeydown(e) {
+        if (e.code === 'Space' || e.code === 'ArrowUp') {
+          e.preventDefault();
+          jump();
+        } else if (e.code === 'KeyR') {
+          if (gameOver) resetGame();
+        }
+      }
+
+      function handlePointer(e) {
+        e.preventDefault();
+        if (gameOver) {
+          resetGame();
+          return;
+        }
+        jump();
+      }
+
+      function jump() {
+        if (player.state === 'running') {
+          player.vy = -h * 1.1;
+          player.state = 'jumping';
+        }
+      }
+
+      let spawnTimer = 0;
+      function randomSpawnTime() {
+        return 0.9 + Math.random() * 0.9;
+      }
+
+      function spawnCactus() {
+        const height = h * (0.08 + Math.random() * 0.05);
+        const width = height * (0.35 + Math.random() * 0.15);
+        cacti.push({
+          x: w + width,
+          y: groundY - height,
+          w: width,
+          h: height,
+        });
+      }
+
+      function loop(timestamp) {
+        const dt = Math.min(0.05, (timestamp - lastTime) / 1000);
+        lastTime = timestamp;
+        update(dt);
+        draw();
+        requestAnimationFrame(loop);
+      }
+
+      function update(dt) {
+        if (!gameOver) {
+          const accel = baseSpeed * 0.05;
+          speed += accel * dt;
+          score += dt * 60 * (speed / baseSpeed);
+          spawnTimer -= dt;
+          if (spawnTimer <= 0) {
+            const last = cacti[cacti.length - 1];
+            if (!last || w - last.x >= w * 0.2) {
+              spawnCactus();
+              spawnTimer = randomSpawnTime();
+            }
+          }
+        }
+
+        if (!gameOver) {
+          clouds.forEach(c => {
+            c.x -= c.speed * dt;
+            if (c.x + c.w < 0) c.x = w + Math.random() * w * 0.2;
+          });
+
+          hills.forEach(hill => {
+            hill.x -= hill.speed * dt;
+            if (hill.x + hill.w < 0) hill.x = w + Math.random() * w * 0.3;
+          });
+
+          cacti.forEach(c => { c.x -= speed * dt; });
+        }
+        while (cacti.length && cacti[0].x + cacti[0].w < -50) {
+          cacti.shift();
+        }
+
+        if (!gameOver) {
+          if (player.state === 'jumping' || player.state === 'falling') {
+            player.vy += h * 2.5 * dt;
+            player.y += player.vy * dt;
+            if (player.y >= groundY - player.height) {
+              player.y = groundY - player.height;
+              player.vy = 0;
+              player.state = 'running';
+            } else if (player.vy > 0) {
+              player.state = 'falling';
+            }
+          }
+        }
+
+        if (!gameOver && player.state === 'running') {
+          legTimer += dt;
+          if (legTimer > 0.1) {
+            legFrame = (legFrame + 1) % 2;
+            legTimer = 0;
+          }
+        }
+
+        blinkTimer -= dt;
+        if (blinkTimer <= 0) {
+          eyeOpen = !eyeOpen;
+          blinkTimer = eyeOpen ? 2 + Math.random() * 3 : 0.12;
+        }
+
+        if (!gameOver) {
+          for (const c of cacti) {
+            if (isColliding(player, c)) {
+              gameOver = true;
+              player.state = 'dead';
+              player.vy = 0;
+              bestScore = Math.max(bestScore, Math.floor(score));
+              saveUser();
+              updateLeaderboard();
+              break;
+            }
+          }
+        }
+      }
+
+      function isColliding(a, b) {
+        const padding = player.width * 0.1;
+        const ax = a.x + padding;
+        const ay = a.y + padding;
+        const aw = a.width - padding * 2;
+        const ah = a.height - padding * 2;
+        return ax < b.x + b.w && ax + aw > b.x && ay < b.y + b.h && ay + ah > b.y;
+      }
+
+      function draw() {
+        ctx.fillStyle = colors.bg;
+        ctx.fillRect(0, 0, w, h);
+
+        // hills
+        ctx.fillStyle = colors.fg;
+        hills.forEach(hill => {
+          ctx.globalAlpha = 0.2;
+          ctx.fillRect(hill.x, hill.y, hill.w, hill.h);
+          ctx.globalAlpha = 1;
+        });
+
+        // clouds
+        ctx.fillStyle = colors.fg;
+        ctx.globalAlpha = 0.35;
+        clouds.forEach(c => {
+          const chunk = c.w / 4;
+          ctx.fillRect(c.x, c.y, c.w, c.h);
+          ctx.fillRect(c.x + chunk, c.y - c.h * 0.3, c.w * 0.5, c.h * 1.2);
+          ctx.fillRect(c.x + chunk * 1.5, c.y + c.h * 0.3, c.w * 0.4, c.h);
+        });
+        ctx.globalAlpha = 1;
+
+        // ground line
+        ctx.strokeStyle = colors.fg;
+        ctx.lineWidth = 2;
+        ctx.beginPath();
+        ctx.moveTo(0, groundY);
+        ctx.lineTo(w, groundY);
+        ctx.stroke();
+
+        // sand dots
+        ctx.fillStyle = colors.fg;
+        sandDots.forEach(d => {
+          ctx.fillRect(d.x, d.y, 2, 2);
+        });
+
+        // cacti
+        cacti.forEach(c => drawCactus(c));
+
+        // player
+        drawPlayer();
+
+        drawText();
+
+        if (gameOver) {
+          drawGameOver();
+        }
+      }
+
+      function drawCactus(c) {
+        ctx.fillStyle = colors.fg;
+        const b = Math.max(3, c.w / 5);
+        const baseX = c.x;
+        const baseY = c.y + c.h;
+        ctx.fillRect(baseX + b, c.y, b * 2, c.h); // main trunk
+        ctx.fillRect(baseX, baseY - c.h * 0.5, b, c.h * 0.4); // left arm
+        ctx.fillRect(baseX + c.w - b, baseY - c.h * 0.7, b, c.h * 0.5); // right arm
+        ctx.fillRect(baseX, baseY - c.h * 0.5 - b, b * 1.5, b); // left cap
+        ctx.fillRect(baseX + c.w - b * 1.5, baseY - c.h * 0.7 - b, b * 1.5, b); // right cap
+        ctx.fillRect(baseX + b * 0.5, baseY - b, c.w - b, b); // base
+      }
+
+      function drawPlayer() {
+        const x = player.x;
+        const y = player.y;
+        const wP = player.width;
+        const hP = player.height;
+        const bodyH = hP * 0.6;
+        const headH = hP * 0.35;
+        const legH = hP * 0.3;
+        const legW = wP * 0.18;
+        const tailW = wP * 0.25;
+
+        ctx.save();
+        if (player.state === 'dead') {
+          ctx.translate(x + wP * 0.1, hP * 0.05);
+          ctx.rotate(-0.08);
+        }
+        ctx.fillStyle = colors.fg;
+        ctx.strokeStyle = colors.outline;
+        ctx.lineWidth = 1.5;
+
+        const bob = player.state === 'running' ? (legFrame === 0 ? 0 : -hP * 0.02) : 0;
+        const bodyY = y + hP * 0.1 + bob;
+
+        // body
+        ctx.fillRect(x, bodyY, wP * 0.7, bodyH);
+        // head
+        ctx.fillRect(x + wP * 0.6, bodyY - headH * 0.4, wP * 0.4, headH);
+        // tail
+        ctx.fillRect(x - tailW * 0.4, bodyY + bodyH * 0.4, tailW, hP * 0.15);
+
+        // legs
+        if (player.state === 'running') {
+          const offset = legFrame === 0 ? 0 : legW * 1.2;
+          ctx.fillRect(x + wP * 0.1, y + hP - legH, legW, legH);
+          ctx.fillRect(x + wP * 0.45 + offset, y + hP - legH, legW, legH * 0.9);
+        } else {
+          ctx.fillRect(x + wP * 0.2, y + hP - legH * 0.7, legW * 1.4, legH * 0.7);
+        }
+
+        // eye
+        if (eyeOpen && player.state !== 'dead') {
+          const eyeX = x + wP * 0.8;
+          const eyeY = bodyY - headH * 0.2;
+          ctx.fillRect(eyeX, eyeY, wP * 0.08, wP * 0.08);
+        }
+
+        ctx.strokeRect(x - 1, y - 1, wP * 1.1, hP * 1.05);
+        ctx.restore();
+      }
+
+      function drawText() {
+        ctx.fillStyle = colors.fg;
+        ctx.font = `${fontSize}px "Courier New", monospace`;
+        ctx.textBaseline = 'top';
+        ctx.textAlign = 'left';
+        ctx.fillText(`USER: ${userName}`, w * 0.04, h * 0.05);
+
+        ctx.textAlign = 'center';
+        ctx.fillText('MAKC', w / 2, h * 0.05);
+
+        const scoreText = pad(Math.floor(score));
+        const bestText = pad(Math.floor(bestScore));
+        ctx.textAlign = 'right';
+        ctx.fillText(`${scoreText} ${bestText}`, w - w * 0.04, h * 0.05);
+      }
+
+      function pad(n) {
+        return n.toString().padStart(5, '0');
+      }
+
+      function drawGameOver() {
+        ctx.fillStyle = colors.fg;
+        ctx.textAlign = 'center';
+        ctx.textBaseline = 'middle';
+        ctx.font = `${fontSize * 1.2}px "Courier New", monospace`;
+        ctx.fillText('GAME OVER', w / 2, h * 0.45);
+        ctx.font = `${fontSize * 0.8}px "Courier New", monospace`;
+        ctx.fillText('Press R or Tap to restart', w / 2, h * 0.52);
+      }
+
+      initGame();
+    })();
+  </script>
+</body>
+</html>
